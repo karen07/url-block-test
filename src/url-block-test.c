@@ -1,55 +1,4 @@
-#include <linux/limits.h>
-#include <arpa/inet.h>
-#include <netdb.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/socket.h>
-#include <netinet/tcp.h>
-#include <unistd.h>
-#include <errno.h>
-#include <poll.h>
-
-#define PORT_TLS 443
-#define PACKET_MAX_SIZE 1500
-
-void print_help()
-{
-    printf("Commands:\n"
-           "-file /example.txt            Domains file path\n");
-    exit(EXIT_FAILURE);
-}
-
-typedef struct tls_data {
-    uint8_t content_type;
-    uint16_t tls_version;
-    uint16_t tls_length;
-
-    uint8_t handshake_type;
-    uint8_t handshake_length_1;
-    uint16_t handshake_length_2;
-    uint16_t handshake_version;
-
-    uint8_t random[32];
-
-    uint8_t session_id_length;
-    uint8_t session_id[32];
-
-    uint16_t cipher_suites_length;
-    uint16_t cipher_suites;
-
-    uint8_t compression_methods_length;
-    uint8_t compression_methods;
-
-    uint16_t extensions_length;
-
-    uint16_t extensions_type;
-    uint16_t extension_length;
-
-    uint16_t sni_list_length;
-    uint8_t sni_type;
-    uint16_t sni_length;
-} __attribute__((packed)) tls_data_t;
+#include "url-block-test.h"
 
 int tls_client_hello(char *send_data, char *sni)
 {
@@ -96,7 +45,12 @@ int tls_client_hello(char *send_data, char *sni)
     return sizeof(tls_data_t) + sni_len;
 }
 
-#define one_pack_size 500
+void print_help()
+{
+    printf("Commands:\n"
+           "-file /example.txt            Domains file path\n");
+    exit(EXIT_FAILURE);
+}
 
 int main(int argc, char *argv[])
 {
@@ -136,16 +90,11 @@ int main(int argc, char *argv[])
         return 0;
     }
 
-    char sni[one_pack_size][PACKET_MAX_SIZE];
-    for (int i = 0; i < one_pack_size; i++) {
-        fscanf(fp, "%s", sni[i]);
-    }
-
-    struct pollfd pollfd_out[one_pack_size];
-    memset(pollfd_out, 0, sizeof(struct pollfd) * one_pack_size);
-
-    struct pollfd pollfd_in[one_pack_size];
-    memset(pollfd_in, 0, sizeof(struct pollfd) * one_pack_size);
+    char sni[MAX_SOCKET_COUNT][PACKET_MAX_SIZE];
+    char send_data[MAX_SOCKET_COUNT][PACKET_MAX_SIZE];
+    int sockfd[MAX_SOCKET_COUNT];
+    struct pollfd pollfd[MAX_SOCKET_COUNT];
+    char read_flags[MAX_SOCKET_COUNT];
 
     struct sockaddr_in servaddr;
     memset(&servaddr, 0, sizeof(servaddr));
@@ -153,67 +102,114 @@ int main(int argc, char *argv[])
     servaddr.sin_addr.s_addr = inet_addr(selectel_ip);
     servaddr.sin_port = htons(PORT_TLS);
 
-    for (int i = 0; i < one_pack_size; i++) {
-        int sockfd;
-        sockfd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    int end_of_file = 0;
 
-        pollfd_out[i].fd = sockfd;
-        pollfd_out[i].events = POLLOUT;
+    while (!end_of_file) {
+        int readed_urls = 0;
+        for (int i = 0; i < MAX_SOCKET_COUNT; i++) {
+            int fscanf_res = fscanf(fp, "%s", sni[i]);
+            if (fscanf_res == EOF) {
+                end_of_file = 1;
+                break;
+            }
+            readed_urls++;
+        }
 
-        pollfd_in[i].fd = sockfd;
-        pollfd_in[i].events = POLLIN;
+        printf("\nreaded_urls %d\n", readed_urls);
 
-        if (connect(sockfd, (struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
-            if (errno != EINPROGRESS) {
-                close(sockfd);
-                printf("karen\n");
+        memset(pollfd, 0, sizeof(struct pollfd) * MAX_SOCKET_COUNT);
+
+        for (int i = 0; i < readed_urls; i++) {
+            sockfd[i] = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+            if (sockfd[i] == -1) {
+                printf("socket open error\n");
+                fflush(stdout);
+            }
+
+            pollfd[i].fd = sockfd[i];
+            pollfd[i].events = POLLOUT;
+
+            if (connect(sockfd[i], (struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
+                if (errno != EINPROGRESS) {
+                    close(sockfd[i]);
+                    printf("socket connect error\n");
+                    fflush(stdout);
+                }
+            }
+        }
+
+        printf("start POLLOUT\n");
+        fflush(stdout);
+
+        int poll_res = 0;
+        while ((poll_res = poll(pollfd, readed_urls, POLL_SLEEP_TIME)) > 0) {
+            //printf("%d\n", poll_res);
+            for (int i = 0; i < readed_urls; i++) {
+                if (pollfd[i].revents == POLLOUT) {
+                    pollfd[i].events = 0;
+                }
+            }
+        }
+
+        printf("end POLLOUT\n");
+        fflush(stdout);
+
+        printf("start write\n");
+        fflush(stdout);
+
+        for (int i = 0; i < readed_urls; i++) {
+            int send_size = 0;
+            send_size = tls_client_hello(send_data[i], sni[i]);
+
+            int sended = 0;
+            sended = write(sockfd[i], send_data[i], send_size);
+            if (sended < 1) {
+                printf("socket write error\n");
                 fflush(stdout);
             }
         }
-    }
 
-    while (poll(pollfd_out, one_pack_size, 100) > 0) {
-        for (int i = 0; i < one_pack_size; i++) {
-            if (pollfd_out[i].revents == POLLOUT) {
-                pollfd_out[i].revents = 0;
-                pollfd_out[i].events = 0;
+        printf("end write\n");
+        fflush(stdout);
+
+        memset(read_flags, 0, MAX_SOCKET_COUNT);
+
+        memset(pollfd, 0, sizeof(struct pollfd) * MAX_SOCKET_COUNT);
+        for (int i = 0; i < readed_urls; i++) {
+            pollfd[i].fd = sockfd[i];
+            pollfd[i].events = POLLIN;
+        }
+
+        printf("start POLLIN\n");
+        fflush(stdout);
+
+        poll_res = 0;
+        while ((poll_res = poll(pollfd, readed_urls, POLL_SLEEP_TIME)) > 0) {
+            //printf("%d\n", poll_res);
+            for (int i = 0; i < readed_urls; i++) {
+                if (pollfd[i].revents == POLLIN) {
+                    pollfd[i].events = 0;
+
+                    read_flags[i] = 1;
+                }
             }
         }
-    }
 
-    char send_data[one_pack_size][PACKET_MAX_SIZE];
-    for (int i = 0; i < one_pack_size; i++) {
-        int send_size = 0;
-        send_size = tls_client_hello(send_data[i], sni[i]);
+        printf("end POLLIN\n");
+        fflush(stdout);
 
-        write(pollfd_out[i].fd, send_data[i], send_size);
-    }
-
-    char read_flags[one_pack_size];
-    memset(read_flags, 0, one_pack_size);
-
-    while (poll(pollfd_in, one_pack_size, 100) > 0) {
-        for (int i = 0; i < one_pack_size; i++) {
-            if (pollfd_in[i].revents == POLLIN) {
-                pollfd_in[i].revents = 0;
-                pollfd_in[i].events = 0;
-
-                read_flags[i] = 1;
+        int block_count = 0;
+        for (int i = 0; i < readed_urls; i++) {
+            if (read_flags[i] == 0) {
+                //printf("block:%s\n", sni[i]);
+                block_count++;
             }
         }
-    }
 
-    int block_count = 0;
-    for (int i = 0; i < one_pack_size; i++) {
-        if (read_flags[i] == 0) {
-            //printf("block:%s\n", sni[i]);
-            block_count++;
+        printf("block_count %d\n", block_count);
+
+        for (int i = 0; i < readed_urls; i++) {
+            close(sockfd[i]);
         }
-    }
-
-    printf("block_count %d\n", block_count);
-
-    for (int i = 0; i < one_pack_size; i++) {
-        close(pollfd_out[i].fd);
     }
 }
