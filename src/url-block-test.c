@@ -54,7 +54,7 @@ void print_help()
 
 int main(int argc, char *argv[])
 {
-    char *selectel_ip = "188.93.16.211";
+    char *selectel_ip = "1.1.1.1";
 
     printf("\nUrl block test started\n");
 
@@ -103,6 +103,7 @@ int main(int argc, char *argv[])
     servaddr.sin_port = htons(PORT_TLS);
 
     int end_of_file = 0;
+    int all_readed_urls = 0;
 
     while (!end_of_file) {
         int readed_urls = 0;
@@ -113,9 +114,10 @@ int main(int argc, char *argv[])
                 break;
             }
             readed_urls++;
+            all_readed_urls++;
         }
 
-        printf("\nreaded_urls %d\n", readed_urls);
+        printf("\nreaded_urls %d all_readed_urls %d\n", readed_urls, all_readed_urls);
 
         memset(pollfd, 0, sizeof(struct pollfd) * MAX_SOCKET_COUNT);
 
@@ -142,71 +144,84 @@ int main(int argc, char *argv[])
         fflush(stdout);
 
         int poll_res = 0;
+        int poll_error_count = 0;
         while ((poll_res = poll(pollfd, readed_urls, POLL_SLEEP_TIME)) > 0) {
-            //printf("%d\n", poll_res);
             for (int i = 0; i < readed_urls; i++) {
+                if (pollfd[i].revents != 0 && pollfd[i].revents != POLLOUT) {
+                    poll_error_count++;
+                    pollfd[i].fd = -1;
+                    pollfd[i].revents = 0;
+                    pollfd[i].events = 0;
+                }
                 if (pollfd[i].revents == POLLOUT) {
+                    pollfd[i].revents = 0;
                     pollfd[i].events = 0;
                 }
             }
         }
+        printf("poll_error_count %d\n", poll_error_count);
 
         printf("end POLLOUT\n");
         fflush(stdout);
 
-        printf("start write\n");
-        fflush(stdout);
+        //printf("start write\n");
+        //fflush(stdout);
 
         for (int i = 0; i < readed_urls; i++) {
-            int send_size = 0;
-            send_size = tls_client_hello(send_data[i], sni[i]);
+            if (pollfd[i].fd != -1) {
+                int send_size = 0;
+                send_size = tls_client_hello(send_data[i], sni[i]);
 
-            int sended = 0;
-            sended = write(sockfd[i], send_data[i], send_size);
-            if (sended < 1) {
-                printf("socket write error\n");
-                fflush(stdout);
+                int sended = 0;
+                sended = write(sockfd[i], send_data[i], send_size);
+                if (sended < 1) {
+                    printf("socket write error\n");
+                    fflush(stdout);
+                }
             }
         }
 
-        printf("end write\n");
-        fflush(stdout);
+        //printf("end write\n");
+        //fflush(stdout);
 
         memset(read_flags, 0, MAX_SOCKET_COUNT);
 
-        memset(pollfd, 0, sizeof(struct pollfd) * MAX_SOCKET_COUNT);
+        //memset(pollfd, 0, sizeof(struct pollfd) * MAX_SOCKET_COUNT);
         for (int i = 0; i < readed_urls; i++) {
-            pollfd[i].fd = sockfd[i];
-            pollfd[i].events = POLLIN;
+            if (pollfd[i].fd != -1) {
+                pollfd[i].events = POLLIN;
+            }
         }
 
-        printf("start POLLIN\n");
-        fflush(stdout);
+        //printf("start POLLIN\n");
+        //fflush(stdout);
 
         poll_res = 0;
         while ((poll_res = poll(pollfd, readed_urls, POLL_SLEEP_TIME)) > 0) {
-            //printf("%d\n", poll_res);
             for (int i = 0; i < readed_urls; i++) {
-                if (pollfd[i].revents == POLLIN) {
+                if (pollfd[i].revents != 0) {
                     pollfd[i].events = 0;
+                    pollfd[i].revents = 0;
+                    pollfd[i].fd = -1;
 
                     read_flags[i] = 1;
                 }
             }
         }
 
-        printf("end POLLIN\n");
-        fflush(stdout);
+        //printf("end POLLIN\n");
+        //fflush(stdout);
 
         int block_count = 0;
         for (int i = 0; i < readed_urls; i++) {
             if (read_flags[i] == 0) {
-                //printf("block:%s\n", sni[i]);
+                printf("block:%s\n", sni[i]);
                 block_count++;
             }
         }
 
         printf("block_count %d\n", block_count);
+        fflush(stdout);
 
         for (int i = 0; i < readed_urls; i++) {
             close(sockfd[i]);
