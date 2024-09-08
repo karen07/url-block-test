@@ -54,8 +54,6 @@ void print_help()
 
 int main(int argc, char *argv[])
 {
-    char *selectel_ip = "1.1.1.1";
-
     printf("\nUrl block test started\n");
 
     int32_t is_domains_file_path = 0;
@@ -90,17 +88,20 @@ int main(int argc, char *argv[])
         return 0;
     }
 
+    uint32_t subnet_ip = inet_addr("104.21.0.1");
+    int32_t subnet_prefix = 19;
+
+    uint32_t start_subnet_ip = ntohl(subnet_ip) + 1;
+
+    int32_t subnet_size = 1;
+    subnet_size <<= 32 - subnet_prefix;
+    uint32_t end_subnet_ip = start_subnet_ip + subnet_size - 3;
+
     char sni[MAX_SOCKET_COUNT][PACKET_MAX_SIZE];
     char send_data[MAX_SOCKET_COUNT][PACKET_MAX_SIZE];
     int sockfd[MAX_SOCKET_COUNT];
     struct pollfd pollfd[MAX_SOCKET_COUNT];
     char read_flags[MAX_SOCKET_COUNT];
-
-    struct sockaddr_in servaddr;
-    memset(&servaddr, 0, sizeof(servaddr));
-    servaddr.sin_family = AF_INET;
-    servaddr.sin_addr.s_addr = inet_addr(selectel_ip);
-    servaddr.sin_port = htons(PORT_TLS);
 
     int end_of_file = 0;
     int all_readed_urls = 0;
@@ -131,6 +132,19 @@ int main(int argc, char *argv[])
             pollfd[i].fd = sockfd[i];
             pollfd[i].events = POLLOUT;
 
+            uint32_t start_subnet_ip_n = htonl(start_subnet_ip++);
+
+            struct sockaddr_in servaddr;
+            memset(&servaddr, 0, sizeof(servaddr));
+            servaddr.sin_family = AF_INET;
+            servaddr.sin_addr.s_addr = start_subnet_ip_n;
+            servaddr.sin_port = htons(PORT_TLS);
+
+            if (start_subnet_ip == end_subnet_ip) {
+                start_subnet_ip = ntohl(subnet_ip) + 1;
+                printf("\n\nReload\n\n");
+            }
+
             if (connect(sockfd[i], (struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
                 if (errno != EINPROGRESS) {
                     close(sockfd[i]);
@@ -140,8 +154,8 @@ int main(int argc, char *argv[])
             }
         }
 
-        printf("start POLLOUT\n");
-        fflush(stdout);
+        //printf("start POLLOUT\n");
+        //fflush(stdout);
 
         int poll_res = 0;
         int poll_error_count = 0;
@@ -159,14 +173,16 @@ int main(int argc, char *argv[])
                 }
             }
         }
-        printf("poll_error_count %d\n", poll_error_count);
 
-        printf("end POLLOUT\n");
-        fflush(stdout);
+        printf("write poll_error_count %d\n", poll_error_count);
+
+        //printf("end POLLOUT\n");
+        //fflush(stdout);
 
         //printf("start write\n");
         //fflush(stdout);
 
+        int write_error_count = 0;
         for (int i = 0; i < readed_urls; i++) {
             if (pollfd[i].fd != -1) {
                 int send_size = 0;
@@ -175,16 +191,17 @@ int main(int argc, char *argv[])
                 int sended = 0;
                 sended = write(sockfd[i], send_data[i], send_size);
                 if (sended < 1) {
-                    printf("socket write error\n");
-                    fflush(stdout);
+                    write_error_count++;
+                    //printf("socket write error\n");
+                    //fflush(stdout);
                 }
             }
         }
 
+        printf("write_error_count %d\n", write_error_count);
+
         //printf("end write\n");
         //fflush(stdout);
-
-        memset(read_flags, 0, MAX_SOCKET_COUNT);
 
         //memset(pollfd, 0, sizeof(struct pollfd) * MAX_SOCKET_COUNT);
         for (int i = 0; i < readed_urls; i++) {
@@ -196,18 +213,28 @@ int main(int argc, char *argv[])
         //printf("start POLLIN\n");
         //fflush(stdout);
 
+        memset(read_flags, 0, MAX_SOCKET_COUNT);
+
         poll_res = 0;
+        poll_error_count = 0;
         while ((poll_res = poll(pollfd, readed_urls, POLL_SLEEP_TIME)) > 0) {
             for (int i = 0; i < readed_urls; i++) {
-                if (pollfd[i].revents != 0) {
-                    pollfd[i].events = 0;
-                    pollfd[i].revents = 0;
+                if (pollfd[i].revents != 0 && pollfd[i].revents != POLLIN) {
+                    poll_error_count++;
                     pollfd[i].fd = -1;
+                    pollfd[i].revents = 0;
+                    pollfd[i].events = 0;
+                }
+                if (pollfd[i].revents == POLLIN) {
+                    pollfd[i].revents = 0;
+                    pollfd[i].events = 0;
 
                     read_flags[i] = 1;
                 }
             }
         }
+
+        printf("read poll_error_count %d\n", poll_error_count);
 
         //printf("end POLLIN\n");
         //fflush(stdout);
@@ -215,7 +242,7 @@ int main(int argc, char *argv[])
         int block_count = 0;
         for (int i = 0; i < readed_urls; i++) {
             if (read_flags[i] == 0) {
-                printf("block:%s\n", sni[i]);
+                //printf("block:%s\n", sni[i]);
                 block_count++;
             }
         }
