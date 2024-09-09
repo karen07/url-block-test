@@ -12,7 +12,7 @@
 
 #define PORT_TLS 443
 #define PACKET_MAX_SIZE 1500
-#define MAX_SOCKET_COUNT 512
+#define MAX_SOCKET_COUNT 100
 #define POLL_SLEEP_TIME 100
 
 typedef struct tls_data {
