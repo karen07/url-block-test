@@ -57,6 +57,7 @@ int main(int argc, char *argv[])
 {
     printf("\nUrl block test started\n");
 
+    //Args
     int32_t is_domains_file_path = 0;
     char domains_file_path[PATH_MAX];
 
@@ -104,6 +105,7 @@ int main(int argc, char *argv[])
         printf("Programm need check_net\n");
         print_help();
     }
+    //Args
 
     printf("\n");
 
@@ -172,71 +174,54 @@ int main(int argc, char *argv[])
     printf("%s\n", inet_ntoa(end_subnet_ip_addr));
     //Calc start end subnet
 
-    int *sockfd = (int *)malloc(MAX_SOCKET_COUNT * sizeof(int));
     struct pollfd *pollfd = (struct pollfd *)malloc(MAX_SOCKET_COUNT * sizeof(struct pollfd));
-
     char *send_data = (char *)malloc(MAX_SOCKET_COUNT * PACKET_MAX_SIZE * sizeof(char));
+    char *ready_to_write = (char *)malloc(MAX_SOCKET_COUNT * sizeof(char));
+    int *sock_to_url = (int *)malloc(MAX_SOCKET_COUNT * sizeof(int));
 
-    char *read_flags = (char *)malloc(MAX_SOCKET_COUNT * sizeof(char));
-    char *write_flags = (char *)malloc(MAX_SOCKET_COUNT * sizeof(char));
-
-    int *socknum_to_urlnum = (int *)malloc(MAX_SOCKET_COUNT * sizeof(int));
-
-    int url_processed_num = 0;
+    int url_index = 0;
 
     int exit_flag = 0;
-
     while (!exit_flag) {
-        memset(pollfd, 0, sizeof(struct pollfd) * MAX_SOCKET_COUNT);
-
         for (int i = 0; i < MAX_SOCKET_COUNT; i++) {
-            sockfd[i] = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
-            if (sockfd[i] == -1) {
-                printf("socket open error %d\n", i);
-                fflush(stdout);
-            }
-
-            pollfd[i].fd = sockfd[i];
+            pollfd[i].fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
         }
 
         for (int i = 0; i < MAX_SOCKET_COUNT; i++) {
-            //struct in_addr ip;
-            //ip.s_addr = htonl(start_subnet_ip);
-            //printf("%s\n", inet_ntoa(ip));
+            if (pollfd[i].fd != -1) {
+                uint32_t start_subnet_ip_n = htonl(start_subnet_ip++);
 
-            uint32_t start_subnet_ip_n = htonl(start_subnet_ip++);
+                struct sockaddr_in servaddr;
+                memset(&servaddr, 0, sizeof(servaddr));
+                servaddr.sin_family = AF_INET;
+                servaddr.sin_addr.s_addr = start_subnet_ip_n;
+                servaddr.sin_port = htons(PORT_TLS);
 
-            struct sockaddr_in servaddr;
-            memset(&servaddr, 0, sizeof(servaddr));
-            servaddr.sin_family = AF_INET;
-            servaddr.sin_addr.s_addr = start_subnet_ip_n;
-            servaddr.sin_port = htons(PORT_TLS);
+                if (start_subnet_ip == end_subnet_ip) {
+                    start_subnet_ip = ntohl(subnet_ip);
+                }
 
-            if (start_subnet_ip == end_subnet_ip) {
-                start_subnet_ip = ntohl(subnet_ip);
-            }
-
-            if (connect(pollfd[i].fd, (struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
-                if (errno != EINPROGRESS) {
-                    close(pollfd[i].fd);
-
-                    pollfd[i].fd = -1;
-
-                    printf("socket connect error %d\n", i);
-                    fflush(stdout);
+                if (connect(pollfd[i].fd, (struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
+                    if (errno != EINPROGRESS) {
+                        close(pollfd[i].fd);
+                        pollfd[i].fd = -1;
+                    }
                 }
             }
         }
 
+        //Ready to write
         for (int i = 0; i < MAX_SOCKET_COUNT; i++) {
-            pollfd[i].events = POLLOUT;
+            if (pollfd[i].fd != -1) {
+                pollfd[i].events = POLLOUT;
+            } else {
+                pollfd[i].events = 0;
+            }
             pollfd[i].revents = 0;
         }
 
-        //printf("start POLLOUT\n");
-        //fflush(stdout);
+        memset(ready_to_write, 0, MAX_SOCKET_COUNT * sizeof(char));
 
-        memset(write_flags, 0, MAX_SOCKET_COUNT);
         while (poll(pollfd, MAX_SOCKET_COUNT, POLL_SLEEP_TIME) > 0) {
             for (int i = 0; i < MAX_SOCKET_COUNT; i++) {
                 if (pollfd[i].revents != 0 && pollfd[i].revents != POLLOUT) {
@@ -261,92 +246,72 @@ int main(int argc, char *argv[])
                     }
                     printf("\n");*/
 
-                    write_flags[i] = 0;
-
                     close(pollfd[i].fd);
-
                     pollfd[i].fd = -1;
                     pollfd[i].events = 0;
                     pollfd[i].revents = 0;
                 }
                 if (pollfd[i].revents == POLLOUT) {
-                    write_flags[i] = 1;
-
                     pollfd[i].events = 0;
                     pollfd[i].revents = 0;
+
+                    ready_to_write[i] = 1;
                 }
             }
         }
+        //Ready to write
 
-        //printf("end POLLOUT\n");
-        //fflush(stdout);
+        int required_num_soc = MAX_SOCKET_COUNT;
 
-        //printf("start write\n");
-        //fflush(stdout);
-
+        //Write
         for (int i = 0; i < MAX_SOCKET_COUNT; i++) {
-            if (write_flags[i] == 1) {
-                socknum_to_urlnum[i] = url_processed_num;
+            if (pollfd[i].fd != -1) {
+                if (ready_to_write[i] == 1) {
+                    if (url_index >= urls_count) {
+                        required_num_soc = i;
 
-                int send_size = 0;
-                send_size = tls_client_hello(&send_data[i * PACKET_MAX_SIZE * sizeof(char)],
-                                             urls[url_processed_num]);
-
-                int sended = 0;
-                sended =
-                    write(pollfd[i].fd, &send_data[i * PACKET_MAX_SIZE * sizeof(char)], send_size);
-                if (sended != send_size) {
-                    processed_urls[url_processed_num] = -1;
-
-                    write_flags[i] = 0;
-
-                    close(pollfd[i].fd);
-
-                    pollfd[i].fd = -1;
-                    pollfd[i].events = 0;
-                    pollfd[i].revents = 0;
-                } else {
-                    pollfd[i].events = POLLIN;
-                    pollfd[i].revents = 0;
-                }
-
-                url_processed_num++;
-                if (url_processed_num >= urls_count) {
-                    url_processed_num = 0;
-
-                    printf("end\n");
-                }
-
-                int search_flag = 0;
-                if (processed_urls[url_processed_num] != 0) {
-                    for (int j = 0; j < urls_count; j++) {
-                        if (processed_urls[j] == 0) {
-                            url_processed_num = j;
-                            search_flag = 1;
-                            break;
-                        }
-                    }
-                    if (!search_flag) {
                         exit_flag = 1;
+
+                        break;
                     }
+
+                    sock_to_url[i] = url_index;
+
+                    char *send_data_local = &send_data[i * PACKET_MAX_SIZE * sizeof(char)];
+
+                    int send_size = 0;
+                    send_size = tls_client_hello(send_data_local, urls[url_index]);
+
+                    int sended = 0;
+                    sended = write(pollfd[i].fd, send_data_local, send_size);
+                    if (sended != send_size) {
+                        processed_urls[url_index] = -1;
+
+                        close(pollfd[i].fd);
+                        pollfd[i].fd = -1;
+                    }
+
+                    url_index++;
                 }
             } else {
-                if (pollfd[i].fd != -1) {
-                    close(pollfd[i].fd);
-
-                    pollfd[i].fd = -1;
-                    pollfd[i].events = 0;
-                    pollfd[i].revents = 0;
-                }
+                close(pollfd[i].fd);
+                pollfd[i].fd = -1;
             }
         }
+        //Write
 
-        //printf("start POLLIN\n");
-        //fflush(stdout);
+        //Ready to read
+        for (int i = 0; i < required_num_soc; i++) {
+            if (pollfd[i].fd != -1) {
+                pollfd[i].events = POLLIN;
+            } else {
+                pollfd[i].events = 0;
+            }
+            pollfd[i].revents = 0;
+        }
 
-        memset(read_flags, 0, MAX_SOCKET_COUNT);
-        while (poll(pollfd, MAX_SOCKET_COUNT, POLL_SLEEP_TIME) > 0) {
-            for (int i = 0; i < MAX_SOCKET_COUNT; i++) {
+        while (poll(pollfd, required_num_soc, POLL_SLEEP_TIME) > 0) {
+            for (int i = 0; i < required_num_soc; i++) {
                 if (pollfd[i].revents != 0 && pollfd[i].revents != POLLIN) {
                     /*printf("POLLIN test: ");
                     if (pollfd[i].revents & POLLIN) {
@@ -368,45 +333,42 @@ int main(int argc, char *argv[])
                         printf("POLLNVAL ");
                     }
                     printf("\n");*/
-                    processed_urls[socknum_to_urlnum[i]] = -1;
-
-                    read_flags[i] = 1;
+                    processed_urls[sock_to_url[i]] = -1;
 
                     close(pollfd[i].fd);
-
                     pollfd[i].fd = -1;
                     pollfd[i].events = 0;
                     pollfd[i].revents = 0;
                 }
                 if (pollfd[i].revents == POLLIN) {
-                    processed_urls[socknum_to_urlnum[i]] = 1;
-
-                    read_flags[i] = 1;
+                    processed_urls[sock_to_url[i]] = 1;
 
                     close(pollfd[i].fd);
-
                     pollfd[i].fd = -1;
                     pollfd[i].events = 0;
                     pollfd[i].revents = 0;
                 }
             }
         }
+        //Ready to read
 
-        //printf("end POLLIN\n");
-        //fflush(stdout);
-
-        for (int i = 0; i < MAX_SOCKET_COUNT; i++) {
-            if (read_flags[i] == 0) {
-                processed_urls[socknum_to_urlnum[i]] = 2;
+        //Find blocked
+        for (int i = 0; i < required_num_soc; i++) {
+            if (pollfd[i].fd != -1 && pollfd[i].events == POLLIN) {
+                processed_urls[sock_to_url[i]] = 2;
             }
         }
+        //Find blocked
 
+        //Close
         for (int i = 0; i < MAX_SOCKET_COUNT; i++) {
             if (pollfd[i].fd != -1) {
                 close(pollfd[i].fd);
             }
         }
+        //Close
 
+        //Stat
         int error_count = 0;
         int in_work_count = 0;
         int blocked_count = 0;
@@ -425,7 +387,15 @@ int main(int argc, char *argv[])
                 blocked_count++;
             }
         }
-        printf("\nerror_count %d in_work_count %d notblocked_count %d blocked_count %d\n",
-               error_count, in_work_count, notblocked_count, blocked_count);
+        printf("\n");
+        printf("error_count %d ", error_count);
+        printf("in_work_count %d ", in_work_count);
+        printf("blocked_count %d ", blocked_count);
+        printf("notblocked_count %d ", notblocked_count);
+        printf("url_processed_num %d ", url_index);
+        printf("\n");
+        //Stat
     }
+
+    return 0;
 }
