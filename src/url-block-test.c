@@ -184,7 +184,9 @@ int main(int argc, char *argv[])
 
     int url_processed_num = 0;
 
-    while (1) {
+    int exit_flag = 0;
+
+    while (!exit_flag) {
         memset(pollfd, 0, sizeof(struct pollfd) * MAX_SOCKET_COUNT);
 
         for (int i = 0; i < MAX_SOCKET_COUNT; i++) {
@@ -308,7 +310,26 @@ int main(int argc, char *argv[])
                     pollfd[i].revents = 0;
                 }
 
-                url_processed_num++; //Доделать правильный поиск след элемента или все закончились
+                url_processed_num++;
+                if (url_processed_num >= urls_count) {
+                    url_processed_num = 0;
+
+                    printf("end\n");
+                }
+
+                int search_flag = 0;
+                if (processed_urls[url_processed_num] != 0) {
+                    for (int j = 0; j < urls_count; j++) {
+                        if (processed_urls[j] == 0) {
+                            url_processed_num = j;
+                            search_flag = 1;
+                            break;
+                        }
+                    }
+                    if (!search_flag) {
+                        exit_flag = 1;
+                    }
+                }
             } else {
                 if (pollfd[i].fd != -1) {
                     close(pollfd[i].fd);
@@ -376,7 +397,6 @@ int main(int argc, char *argv[])
 
         for (int i = 0; i < MAX_SOCKET_COUNT; i++) {
             if (read_flags[i] == 0) {
-                printf("%s\n", urls[socknum_to_urlnum[i]]);
                 processed_urls[socknum_to_urlnum[i]] = 2;
             }
         }
@@ -388,11 +408,24 @@ int main(int argc, char *argv[])
         }
 
         int error_count = 0;
+        int in_work_count = 0;
+        int blocked_count = 0;
+        int notblocked_count = 0;
         for (int32_t i = 0; i < urls_count; i++) {
             if (processed_urls[i] == -1) {
                 error_count++;
             }
+            if (processed_urls[i] == 0) {
+                in_work_count++;
+            }
+            if (processed_urls[i] == 1) {
+                notblocked_count++;
+            }
+            if (processed_urls[i] == 2) {
+                blocked_count++;
+            }
         }
-        printf("\nerror_count %d\n", error_count);
+        printf("\nerror_count %d in_work_count %d notblocked_count %d blocked_count %d\n",
+               error_count, in_work_count, notblocked_count, blocked_count);
     }
 }
