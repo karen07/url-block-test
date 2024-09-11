@@ -273,10 +273,10 @@ int main(int argc, char *argv[])
                         }
 
                         url_index++;
+                    } else {
+                        close(pollfd[i].fd);
+                        pollfd[i].fd = -1;
                     }
-                } else {
-                    close(pollfd[i].fd);
-                    pollfd[i].fd = -1;
                 }
             }
             //Write
@@ -354,7 +354,7 @@ int main(int argc, char *argv[])
             printf("in_work_count %d ", in_work_count);
             printf("blocked_count %d ", blocked_count);
             printf("notblocked_count %d ", notblocked_count);
-            printf("url_processed_num %d ", url_index);
+            printf("url_index %d ", url_index);
             printf("\n");
             //Stat
         }
