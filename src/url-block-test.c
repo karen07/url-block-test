@@ -191,6 +191,9 @@ int main(int argc, char *argv[])
                 pollfd[i].fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
             }
 
+            int create_err = 0;
+            int connect_err = 0;
+
             for (int i = 0; i < MAX_SOCKET_COUNT; i++) {
                 if (pollfd[i].fd != -1) {
                     uint32_t start_subnet_ip_n = htonl(start_subnet_ip++);
@@ -209,8 +212,11 @@ int main(int argc, char *argv[])
                         if (errno != EINPROGRESS) {
                             close(pollfd[i].fd);
                             pollfd[i].fd = -1;
+                            connect_err++;
                         }
                     }
+                } else {
+                    create_err++;
                 }
             }
 
@@ -226,6 +232,8 @@ int main(int argc, char *argv[])
 
             memset(ready_to_write, 0, MAX_SOCKET_COUNT);
 
+            int pollout_err = 0;
+
             while (poll(pollfd, MAX_SOCKET_COUNT, POLL_SLEEP_TIME) > 0) {
                 for (int i = 0; i < MAX_SOCKET_COUNT; i++) {
                     if (pollfd[i].revents != 0 && pollfd[i].revents != POLLOUT) {
@@ -233,6 +241,7 @@ int main(int argc, char *argv[])
                         pollfd[i].fd = -1;
                         pollfd[i].events = 0;
                         pollfd[i].revents = 0;
+                        pollout_err++;
                     }
                     if (pollfd[i].revents == POLLOUT) {
                         pollfd[i].events = 0;
@@ -245,6 +254,9 @@ int main(int argc, char *argv[])
             //Ready to write
 
             int required_num_soc = MAX_SOCKET_COUNT;
+
+            int write_err = 0;
+            int timeout_err = 0;
 
             //Write
             for (int i = 0; i < MAX_SOCKET_COUNT; i++) {
@@ -270,12 +282,14 @@ int main(int argc, char *argv[])
                         if (sended != send_size) {
                             close(pollfd[i].fd);
                             pollfd[i].fd = -1;
+                            write_err++;
                         }
 
                         url_index++;
                     } else {
                         close(pollfd[i].fd);
                         pollfd[i].fd = -1;
+                        timeout_err++;
                     }
                 }
             }
@@ -291,6 +305,8 @@ int main(int argc, char *argv[])
                 pollfd[i].revents = 0;
             }
 
+            int pollin_err = 0;
+
             while (poll(pollfd, required_num_soc, POLL_SLEEP_TIME) > 0) {
                 for (int i = 0; i < required_num_soc; i++) {
                     if (pollfd[i].revents != 0 && pollfd[i].revents != POLLIN) {
@@ -298,6 +314,7 @@ int main(int argc, char *argv[])
                         pollfd[i].fd = -1;
                         pollfd[i].events = 0;
                         pollfd[i].revents = 0;
+                        pollin_err++;
                     }
                     if (pollfd[i].revents == POLLIN) {
                         int readed = 0;
@@ -355,6 +372,14 @@ int main(int argc, char *argv[])
             printf("blocked_count %d ", blocked_count);
             printf("notblocked_count %d ", notblocked_count);
             printf("url_index %d ", url_index);
+            printf("\n");
+            printf("opened %d ", MAX_SOCKET_COUNT);
+            printf("create_err %d ", create_err);
+            printf("connect_err %d ", connect_err);
+            printf("pollout_err %d ", pollout_err);
+            printf("write_err %d ", write_err);
+            printf("timeout_err %d ", timeout_err);
+            printf("pollin_err %d ", pollin_err);
             printf("\n");
             //Stat
         }
