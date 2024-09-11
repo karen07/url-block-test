@@ -1,25 +1,13 @@
 #include "url-block-test.h"
 #include "custom-trace.h"
-#include <cstdio>
+#include "tls-module.h"
+#include "utils.h"
+
+#include <netinet/in.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <sys/poll.h>
 
-typedef struct programm_args_ {
-    int32_t is_domains_file_path;
-    char domains_file_path[PATH_MAX];
-    uint32_t check_net_ip;
-    uint32_t check_net_prefix;
-} programm_args;
-
-typedef struct domain_list_ {
-    uint64_t count;
-    char **urls;
-} domain_list;
-
-#define get_url_from_list(list, index) (list->count > index ? (list->urls[index]) : NULL)
-#define get_url_number_in_list(list) (list->count)
-
-//SIS
 int tls_client_hello(char *send_data, char *sni)
 {
     int sni_len = strlen(sni);
@@ -108,91 +96,14 @@ static inline int parse_programm_args(int argc, char *argv[], programm_args *arg
     return 0;
 }
 
-static inline domain_list *create_domain_list(char *file_name) {
-    domain_list *list;
-    char *file_data;
-    int64_t urls_file_size_add;
-
-    int urls_count = 0;
-    FILE *fp = fopen(file_name, "r");
-    if (!fp) {
-        PERROR("Error opening file %s\n", file_name);
-        return NULL;
-    }
-
-    list = (domain_list *) calloc(1, sizeof(domain_list));
-
-    if (!list) {
-        PERROR("Memory allocation error\n");
-        goto error_allocate_domain_list;
-    }
-
-    fseek(fp, 0, SEEK_END);
-    urls_file_size_add = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
-
-    file_data = (char *) malloc(urls_file_size_add);
-
-    if (!file_data) {
-        PERROR("Memory allocation error\n");
-        goto error_allocate_file_data;
-    }
-
-    if (fread(file_data, sizeof(char), urls_file_size_add, fp) != (size_t)urls_file_size_add) {
-        PERROR("Can't read url file\n");
-        goto error_fread;
-    }
-
-    for (int32_t i = 0; i < (int32_t)urls_file_size_add; i++) {
-        if (file_data[i] == '\n') {
-            file_data[i] = 0;
-            ++urls_count;
-        }
-    }
-
-    list->urls = malloc(urls_count * sizeof(char*));
-    list->count = urls_count;
-
-    if (!list->urls) {
-        PERROR("Memory allocation error\n");
-        goto error_fread;
-    }
-
-    for (int32_t i = 0; i < urls_count; i++) {
-        list->urls[i] = file_data;
-
-        file_data = strchr(file_data, 0) + 1;
-    }
-
-    fclose(fp);
-
-    return list;
-
-error_fread:
-    free(file_data);
-
-error_allocate_file_data:
-    free(list);
-
-error_allocate_domain_list:
-    fclose(fp);
-
-    return NULL;
-}
-
-static inline void destroy_domain_list(domain_list *list) {
-    if (list->count > 0) {
-        free(list->urls[0]);
-        free(list->urls);
-    }
-
-    free(list);
-}
-
 int main(int argc, char *argv[])
 {
     programm_args args;
     domain_list *dlist;
+    subnet_ctx subnet;
+    tls_connection_ctx **tls_ctxs;
+    struct pollfd *pollset;
+
     PINFO("\nUrl block test started\n");
 
     // Parsing the command line
@@ -227,33 +138,27 @@ int main(int argc, char *argv[])
     //URLs read
 
     //Calc start end subnet
-    uint32_t subnet_ip = check_net_ip;
-    int32_t subnet_prefix = check_net_prefix;
+    calc_ip_addr_range(args.check_net_ip, args.check_net_prefix, &subnet);
+    PINFO("Check subnet");
+    PINFO(" %s", inet_ntoa(subnet.start_subnet_ip_addr));
+    PINFO(" - ");
+    PINFO("%s\n", inet_ntoa(subnet.end_subnet_ip_addr));
+    
+    pollset = (struct pollfd *) malloc(MAX_SOCKET_COUNT * sizeof(struct pollfd));
 
-    uint32_t start_subnet_ip = ntohl(subnet_ip);
+    if (!pollset) {
+        PERROR("Memory allocation error\n");
+        return -1;
+    }
 
-    int32_t subnet_size = 1;
-    subnet_size <<= 32 - subnet_prefix;
-    uint32_t end_subnet_ip = start_subnet_ip + subnet_size - 1;
+    tls_ctxs = create_multi_tls_ctxs(MAX_SOCKET_COUNT, PACKET_MAX_SIZE, pollset);
 
-    struct in_addr start_subnet_ip_addr;
-    start_subnet_ip_addr.s_addr = htonl(start_subnet_ip);
+    if (!tls_ctxs) {
+        PERROR("TLS contexts creation is failed\n");
+        return -1;
+    }
 
-    struct in_addr end_subnet_ip_addr;
-    end_subnet_ip_addr.s_addr = htonl(end_subnet_ip);
-
-    printf("Check subnet");
-    printf(" %s", inet_ntoa(start_subnet_ip_addr));
-    printf(" - ");
-    printf("%s\n", inet_ntoa(end_subnet_ip_addr));
-    //Calc start end subnet
-
-    struct pollfd *pollfd = (struct pollfd *)malloc(MAX_SOCKET_COUNT * sizeof(struct pollfd));
-    char *send_data = (char *)malloc(MAX_SOCKET_COUNT * PACKET_MAX_SIZE);
-    char *read_data = (char *)malloc(PACKET_MAX_SIZE);
-    char *ready_to_write = (char *)malloc(MAX_SOCKET_COUNT);
-    int *sock_to_url = (int *)malloc(MAX_SOCKET_COUNT * sizeof(int));
-
+    uint32_t start_subnet_ip_tmp = subnet.start_subnet_ip;
     for (int k = 0; k < 5; k++) {
         int url_index = 0;
         int exit_flag = 0;
@@ -261,95 +166,68 @@ int main(int argc, char *argv[])
         printf("\nTry %d\n", k);
 
         while (!exit_flag) {
-            for (int i = 0; i < MAX_SOCKET_COUNT; i++) {
-                pollfd[i].fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
-            }
-
             int create_err = 0;
             int connect_err = 0;
 
             for (int i = 0; i < MAX_SOCKET_COUNT; i++) {
-                if (pollfd[i].fd != -1) {
-                    uint32_t start_subnet_ip_n = htonl(start_subnet_ip++);
+                tls_connection_ctx *ctx = tls_ctxs[i];
 
-                    struct sockaddr_in servaddr;
-                    memset(&servaddr, 0, sizeof(servaddr));
-                    servaddr.sin_family = AF_INET;
-                    servaddr.sin_addr.s_addr = start_subnet_ip_n;
-                    servaddr.sin_port = htons(PORT_TLS);
+                create_tls_socket(ctx);
+                mark_tls_socket_not_active(ctx);
 
-                    if (start_subnet_ip == end_subnet_ip) {
-                        start_subnet_ip = ntohl(subnet_ip);
+                if (is_tls_socket_valid(ctx)) {
+                    uint32_t start_subnet_ip_n = start_subnet_ip_tmp++;
+
+                    if (connect_tls_socket(ctx, start_subnet_ip_n)) {
+                        close_tls_socket(ctx);
+                        ++connect_err;
+                    } else {
+                        mark_tls_socket_active_out(ctx);
                     }
-
-                    if (connect(pollfd[i].fd, (struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
-                        if (errno != EINPROGRESS) {
-                            close(pollfd[i].fd);
-                            pollfd[i].fd = -1;
-                            connect_err++;
-                        }
+                    
+                    if (start_subnet_ip_tmp == subnet.end_subnet_ip) {
+                        start_subnet_ip_tmp = subnet.start_subnet_ip;
                     }
                 } else {
                     create_err++;
                 }
             }
 
-            //Ready to write
-            for (int i = 0; i < MAX_SOCKET_COUNT; i++) {
-                if (pollfd[i].fd != -1) {
-                    pollfd[i].events = POLLOUT;
-                } else {
-                    pollfd[i].events = 0;
-                }
-                pollfd[i].revents = 0;
-            }
-
-            memset(ready_to_write, 0, MAX_SOCKET_COUNT);
-
             int pollout_err = 0;
-
-            while (poll(pollfd, MAX_SOCKET_COUNT, POLL_SLEEP_TIME) > 0) {
+            while (poll(pollset, MAX_SOCKET_COUNT, POLL_SLEEP_TIME) > 0) {
                 for (int i = 0; i < MAX_SOCKET_COUNT; i++) {
-                    if (pollfd[i].revents != 0 && pollfd[i].revents != POLLOUT) {
-                        close(pollfd[i].fd);
-                        pollfd[i].fd = -1;
-                        pollfd[i].events = 0;
-                        pollfd[i].revents = 0;
+                    tls_connection_ctx *ctx = tls_ctxs[i];
+                    if (pollset[i].revents != 0 && pollset[i].revents != POLLOUT) {
+                        close_tls_socket(ctx);
+                        mark_tls_socket_not_active(ctx);
                         pollout_err++;
-                    }
-                    if (pollfd[i].revents == POLLOUT) {
-                        pollfd[i].events = 0;
-                        pollfd[i].revents = 0;
-
-                        ready_to_write[i] = 1;
+                    } else if (pollset[i].revents == POLLOUT) {
+                        mark_tls_socket_ready_write(ctx);
                     }
                 }
             }
-            //Ready to write
 
             int required_num_soc = MAX_SOCKET_COUNT;
-
             int write_err = 0;
             int timeout_err = 0;
 
             //Write
             for (int i = 0; i < MAX_SOCKET_COUNT; i++) {
-                if (pollfd[i].fd != -1) {
-                    if (ready_to_write[i] == 1) {
-                        if (url_index >= urls_count) {
+                tls_connection_ctx *ctx = tls_ctxs[i];
+                if (is_tls_socket_valid(ctx)) {
+                    if (is_tls_socket_ready_write(ctx)) {
+                        if (url_index >= get_url_number_in_list(dlist)) {
                             required_num_soc = i;
-
                             exit_flag = 1;
-
                             break;
                         }
 
-                        sock_to_url[i] = url_index;
+                        ctx->sock_to_url = url_index;
 
-                        char *send_data_local = &send_data[i * PACKET_MAX_SIZE];
+                        char *send_data_local = ctx->send_data;
 
                         int send_size = 0;
-                        send_size = tls_client_hello(send_data_local, urls[url_index]);
+                        send_size = tls_client_hello(send_data_local, get_url_from_list(dlist, url_index));
 
                         int sended = 0;
                         sended = write(pollfd[i].fd, send_data_local, send_size);
