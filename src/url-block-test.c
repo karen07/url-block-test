@@ -1,4 +1,23 @@
 #include "url-block-test.h"
+#include "custom-trace.h"
+#include <cstdio>
+#include <stdint.h>
+#include <stdio.h>
+
+typedef struct programm_args_ {
+    int32_t is_domains_file_path;
+    char domains_file_path[PATH_MAX];
+    uint32_t check_net_ip;
+    uint32_t check_net_prefix;
+} programm_args;
+
+typedef struct domain_list_ {
+    uint64_t count;
+    char **urls;
+} domain_list;
+
+#define get_url_from_list(list, index) (list->count > index ? (list->urls[index]) : NULL)
+#define get_url_number_in_list(list) (list->count)
 
 //SIS
 int tls_client_hello(char *send_data, char *sni)
@@ -54,103 +73,157 @@ void print_help()
     exit(EXIT_FAILURE);
 }
 
-int main(int argc, char *argv[])
-{
-    printf("\nUrl block test started\n");
-
-    //Args
-    int32_t is_domains_file_path = 0;
-    char domains_file_path[PATH_MAX];
-
-    uint32_t check_net_ip = 0;
-    uint32_t check_net_prefix = 0;
-
+static inline int parse_programm_args(int argc, char *argv[], programm_args *args) {
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-file")) {
             if (i != argc - 1) {
-                printf("Get urls from file %s\n", argv[i + 1]);
+                PDEBUG("Get urls from file %s\n", argv[i + 1]);
                 if (strlen(argv[i + 1]) < PATH_MAX) {
-                    is_domains_file_path = 1;
-                    strcpy(domains_file_path, argv[i + 1]);
+                    args->is_domains_file_path = 1;
+                    strcpy(args->domains_file_path, argv[i + 1]);
                 }
                 i++;
             }
             continue;
-        }
-        if (!strcmp(argv[i], "-check_net")) {
+        } else if (!strcmp(argv[i], "-check_net")) {
             if (i != argc - 1) {
-                printf("Check net %s\n", argv[i + 1]);
+                PDEBUG("Check net %s\n", argv[i + 1]);
                 char *slash_ptr = strchr(argv[i + 1], '/');
                 if (slash_ptr) {
-                    sscanf(slash_ptr + 1, "%u", &check_net_prefix);
+                    sscanf(slash_ptr + 1, "%u", &args->check_net_prefix);
                     *slash_ptr = 0;
                     if (strlen(argv[i + 1]) < INET_ADDRSTRLEN) {
-                        check_net_ip = inet_addr(argv[i + 1]);
+                        args->check_net_ip = inet_addr(argv[i + 1]);
                     }
                     *slash_ptr = '/';
                 }
                 i++;
             }
-            continue;
+        } else {
+            PERROR("Unknown command %s\n", argv[i]);
+            return -1;
         }
-        printf("Unknown command %s\n", argv[i]);
-        print_help();
     }
 
-    if (!is_domains_file_path) {
-        printf("Programm need domains file path\n");
-        print_help();
-    }
+    return 0;
+}
 
-    if (!check_net_ip || !check_net_prefix) {
-        printf("Programm need check_net\n");
-        print_help();
-    }
-    //Args
+static inline domain_list *create_domain_list(char *file_name) {
+    domain_list *list;
+    char *file_data;
+    int64_t urls_file_size_add;
 
-    printf("\n");
-
-    //URLs read
-    FILE *fp = fopen(domains_file_path, "r");
+    int urls_count = 0;
+    FILE *fp = fopen(file_name, "r");
     if (!fp) {
-        printf("Error opening file %s\n", domains_file_path);
-        return 0;
+        PERROR("Error opening file %s\n", file_name);
+        return NULL;
+    }
+
+    list = (domain_list *) calloc(1, sizeof(domain_list));
+
+    if (!list) {
+        PERROR("Memory allocation error\n");
+        goto error_allocate_domain_list;
     }
 
     fseek(fp, 0, SEEK_END);
-    int64_t urls_file_size_add = ftell(fp);
+    urls_file_size_add = ftell(fp);
     fseek(fp, 0, SEEK_SET);
 
-    char *file_data = (char *)malloc(urls_file_size_add);
+    file_data = (char *) malloc(urls_file_size_add);
 
-    if (fread(file_data, sizeof(char), urls_file_size_add, fp) != (size_t)urls_file_size_add) {
-        printf("Can't read url file\n");
-        exit(EXIT_FAILURE);
+    if (!file_data) {
+        PERROR("Memory allocation error\n");
+        goto error_allocate_file_data;
     }
 
-    int urls_count = 0;
+    if (fread(file_data, sizeof(char), urls_file_size_add, fp) != (size_t)urls_file_size_add) {
+        PERROR("Can't read url file\n");
+        goto error_fread;
+    }
 
     for (int32_t i = 0; i < (int32_t)urls_file_size_add; i++) {
         if (file_data[i] == '\n') {
             file_data[i] = 0;
-            urls_count++;
+            ++urls_count;
         }
     }
 
-    char **urls = (char **)malloc(urls_count * sizeof(char *));
+    list->urls = malloc(urls_count * sizeof(char*));
+    list->count = urls_count;
 
-    char *processed_urls = (char *)malloc(urls_count);
-    memset(processed_urls, 0, urls_count);
-
-    char *url_start = file_data;
-
-    for (int32_t i = 0; i < urls_count; i++) {
-        urls[i] = url_start;
-
-        url_start = strchr(url_start, 0) + 1;
+    if (!list->urls) {
+        PERROR("Memory allocation error\n");
+        goto error_fread;
     }
 
-    printf("URLs count %d\n", urls_count);
+    for (int32_t i = 0; i < urls_count; i++) {
+        list->urls[i] = file_data;
+
+        file_data = strchr(file_data, 0) + 1;
+    }
+
+    fclose(fp);
+
+    return list;
+
+error_fread:
+    free(file_data);
+
+error_allocate_file_data:
+    free(list);
+
+error_allocate_domain_list:
+    fclose(fp);
+
+    return NULL;
+}
+
+static inline void destroy_domain_list(domain_list *list) {
+    if (list->count > 0) {
+        free(list->urls[0]);
+        free(list->urls);
+    }
+
+    free(list);
+}
+
+int main(int argc, char *argv[])
+{
+    programm_args args;
+    domain_list *dlist;
+    PINFO("\nUrl block test started\n");
+
+    // Parsing the command line
+    if (parse_programm_args(argc, argv, &args)) {
+        print_help();
+        return -1;
+    }
+
+    // Check the option of file name with list of domains
+    if (!args.is_domains_file_path) {
+        printf("Programm need domains file path\n");
+        print_help();
+        return -1;
+    }
+
+    // Check the option of specified TLS subnet
+    if (!args.check_net_ip || !args.check_net_prefix) {
+        printf("Programm need check_net\n");
+        print_help();
+        return -1;
+    }
+
+    PINFO("\n");
+
+    dlist = create_domain_list(args.domains_file_path);
+    if (!dlist) {
+        PERROR("Error while creating url list\n");
+        return -1;
+    }
+
+    PINFO("URLs count %lu\n", get_url_number_in_list(dlist));
     //URLs read
 
     //Calc start end subnet
