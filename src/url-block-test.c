@@ -45,7 +45,7 @@ int tls_client_hello(char *send_data, char *sni)
     return sizeof(tls_data_t) + sni_len;
 }
 
-void print_help()
+void print_help(void)
 {
     printf("Commands:\n"
            "-file /example.txt            Domains file path\n"
