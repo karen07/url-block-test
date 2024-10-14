@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.6)
 project(url-block-test)
-add_compile_options(-Wall -Wextra -Werror)
+add_compile_options(-Wall -Wextra -Werror -Wpedantic)
 add_link_options()
 include_directories(include)
 add_executable(url-block-test src/url-block-test.c)
