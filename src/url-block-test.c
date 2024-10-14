@@ -385,5 +385,17 @@ int main(int argc, char *argv[])
         }
     }
 
+    FILE *blocked_fp = fopen("blocked.txt", "w");
+    if (!blocked_fp) {
+        printf("Error opening file blocked.txt\n");
+        return 0;
+    }
+
+    for (int32_t i = 0; i < urls_count; i++) {
+        if (processed_urls[i] == 1) {
+            fprintf(blocked_fp, "%s\n", urls[i]);
+        }
+    }
+
     return 0;
 }
