@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.10)
+project(url-block-test)
+add_compile_options(-Wall -Wextra -Werror -Wpedantic)
+add_link_options()
+include_directories(include)
+add_executable(url-block-test src/url-block-test.c)
+target_link_libraries(url-block-test)
+install(TARGETS url-block-test DESTINATION /usr/bin)
